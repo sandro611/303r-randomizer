@@ -70,6 +70,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AcidRandomizerProcessor::cre
     p.push_back (std::make_unique<AudioParameterBool> (ParameterID { "anchor", 1 }, "Anchor First Step On Root", true));
     p.push_back (std::make_unique<AudioParameterInt> (ParameterID { "channel", 1 }, "MIDI Channel", 1, 16, 1));
 
+    ClipCapture::addParameters (p);
+
     return { std::make_move_iterator (p.begin()), std::make_move_iterator (p.end()) };
 }
 
@@ -113,6 +115,12 @@ bool AcidRandomizerProcessor::isBusesLayoutSupported (const BusesLayout& layouts
 
 //==============================================================================
 void AcidRandomizerProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
+{
+    processGenerated (buffer, midi);
+    capture.processBlock (getPlayHead(), midi, buffer.getNumSamples(), getSampleRate());
+}
+
+void AcidRandomizerProcessor::processGenerated (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
@@ -278,9 +286,8 @@ class AcidRandomizerEditor : public juce::AudioProcessorEditor
 {
 public:
     explicit AcidRandomizerEditor (AcidRandomizerProcessor& p)
-        : AudioProcessorEditor (&p), proc (p), generic (p)
+        : AudioProcessorEditor (&p), proc (p), generic (p), clipUI (p.capture)
     {
-        addAndMakeVisible (generic);
         addAndMakeVisible (randomButton);
         randomButton.setButtonText ("Randomize pattern");
         randomButton.onClick = [this]
@@ -292,19 +299,23 @@ public:
                 seed->endChangeGesture();
             }
         };
-        setSize (420, 700);
+        addAndMakeVisible (clipUI);
+        addAndMakeVisible (generic);
+        setSize (460, 860);
     }
 
     void resized() override
     {
         auto b = getLocalBounds();
         randomButton.setBounds (b.removeFromTop (44).reduced (6));
+        clipUI.setBounds (b.removeFromTop (250));
         generic.setBounds (b);
     }
 
 private:
     AcidRandomizerProcessor& proc;
     juce::GenericAudioProcessorEditor generic;
+    ClipCaptureUI clipUI;
     juce::TextButton randomButton;
 };
 
@@ -316,7 +327,9 @@ juce::AudioProcessorEditor* AcidRandomizerProcessor::createEditor()
 //==============================================================================
 void AcidRandomizerProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    capture.saveToTree (state);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
@@ -324,7 +337,11 @@ void AcidRandomizerProcessor::setStateInformation (const void* data, int sizeInB
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        {
+            auto tree = juce::ValueTree::fromXml (*xml);
+            apvts.replaceState (tree);
+            capture.loadFromTree (tree);
+        }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
